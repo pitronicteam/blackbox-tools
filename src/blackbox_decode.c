@@ -36,7 +36,7 @@
 #define MIN_GPS_SATELLITES 5
 
 typedef struct decodeOptions_t {
-    int help, raw, limits, debug, toStdout;
+    int help, raw, limits, debug, toStdout, binOnly;
     int logNumber;
     int simulateIMU, imuIgnoreMag;
     int includeIMUDegrees;
@@ -52,7 +52,7 @@ typedef struct decodeOptions_t {
 } decodeOptions_t;
 
 decodeOptions_t options = {
-    .help = 0, .raw = 0, .limits = 0, .debug = 0, .toStdout = 0,
+    .help = 0, .raw = 0, .limits = 0, .debug = 0, .toStdout = 0, .binOnly = 0,
     .logNumber = -1,
     .simulateIMU = false, .imuIgnoreMag = 0,
     .includeIMUDegrees = false,
@@ -92,9 +92,10 @@ static GPSFieldType gpsFieldTypes[FLIGHT_LOG_MAX_FIELDS];
 static int64_t lastFrameTime;
 static uint32_t lastFrameIteration;
 
-static FILE *csvFile = 0, *eventFile = 0, *gpsCsvFile = 0;
+static FILE *csvFile = 0, *binFile = 0, *eventFile = 0, *gpsCsvFile = 0;
 static char *eventFilename = 0, *gpsCsvFilename = 0;
 static gpxWriter_t *gpx = 0;
+static int binFieldIds[] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
 
 // Computed states:
 static currentMeterState_t currentMeterMeasured;
@@ -603,6 +604,19 @@ void outputMainFrameFields(flightLog_t *log, int64_t frameTime, int64_t *frame)
     }
 }
 
+void outputMainFrameFields_bin(bool frameValid, int64_t *frame)
+{
+    if (!frameValid) {
+        return;
+    }
+    int i;
+    for (i = 0; i < 11; i++) {
+        if (binFieldIds[i] != -1) {
+            fwrite(frame + binFieldIds[i], 4, 1, binFile);
+        }
+    }
+}
+
 void outputMergeFrame(flightLog_t *log)
 {
     outputMainFrameFields(log, bufferedFrameTime, bufferedMainFrame);
@@ -728,12 +742,12 @@ void onFrameReady(flightLog_t *log, bool frameValid, int64_t *frame, uint8_t fra
 
     switch (frameType) {
         case 'G':
-            if (frameValid) {
+            if (frameValid && !options.binOnly) {
                 outputGPSFrame(log, frame);
             }
         break;
         case 'S':
-            if (frameValid) {
+            if (frameValid && !options.binOnly) {
                 memcpy(bufferedSlowFrame, frame, sizeof(bufferedSlowFrame));
 
                 if (options.debug) {
@@ -755,12 +769,19 @@ void onFrameReady(flightLog_t *log, bool frameValid, int64_t *frame, uint8_t fra
                     lastFrameTime = frame[FLIGHT_LOG_FIELD_INDEX_TIME];
                 }
 
-                outputMainFrameFields(log, frameValid ? frame[FLIGHT_LOG_FIELD_INDEX_TIME] : -1, frame);
-
-                if (options.debug) {
-                    fprintf(csvFile, ", %c, offset %d, size %d\n", (char) frameType, frameOffset, frameSize);
+                if(options.binOnly){
+                    outputMainFrameFields_bin(frameValid, frame);
+                    if (options.debug) {
+                        fprintf(stdout, ", %c, offset %d, size %d\n", (char) frameType, frameOffset, frameSize);
+                    }
                 } else {
-                    fprintf(csvFile, "\n");
+                    outputMainFrameFields(log, frameValid ? frame[FLIGHT_LOG_FIELD_INDEX_TIME] : -1, frame);
+
+                    if (options.debug) {
+                        fprintf(csvFile, ", %c, offset %d, size %d\n", (char) frameType, frameOffset, frameSize);
+                    } else {
+                        fprintf(csvFile, "\n");
+                    }
                 }
             } else if (options.debug) {
                 // Print to stdout so that these messages line up with our other output on stdout (stderr isn't synchronised to it)
@@ -769,9 +790,9 @@ void onFrameReady(flightLog_t *log, bool frameValid, int64_t *frame, uint8_t fra
                      * We'll assume that the frame's iteration count is still fairly sensible (if an earlier frame was corrupt,
                      * the frame index will be smaller than it should be)
                      */
-                    fprintf(csvFile, "%c Frame unusuable due to prior corruption, offset %d, size %d\n", (char) frameType, frameOffset, frameSize);
+                    fprintf(stderr, "%c Frame unusuable due to prior corruption, offset %d, size %d\n", (char) frameType, frameOffset, frameSize);
                 } else {
-                    fprintf(csvFile, "Failed to decode %c frame, offset %d, size %d\n", (char) frameType, frameOffset, frameSize);
+                    fprintf(stderr, "Failed to decode %c frame, offset %d, size %d\n", (char) frameType, frameOffset, frameSize);
                 }
             }
         break;
@@ -930,7 +951,22 @@ void onMetadataReady(flightLog_t *log)
     identifyGPSFields(log);
     applyFieldUnits(log);
 
-    writeMainCSVHeader(log);
+    if(!options.binOnly) {
+        writeMainCSVHeader(log);
+    }
+
+    binFieldIds[0] = log->mainFieldIndexes.time;
+    binFieldIds[1] = log->mainFieldIndexes.setpoint[0];
+    binFieldIds[2] = log->mainFieldIndexes.setpoint[1];
+    binFieldIds[3] = log->mainFieldIndexes.setpoint[2];
+    binFieldIds[4] = log->mainFieldIndexes.gyroADC[0];
+    binFieldIds[5] = log->mainFieldIndexes.gyroADC[1];
+    binFieldIds[6] = log->mainFieldIndexes.gyroADC[2];
+    binFieldIds[7] = log->mainFieldIndexes.debug[0];
+    binFieldIds[8] = log->mainFieldIndexes.debug[1];
+    binFieldIds[9] = log->mainFieldIndexes.debug[2];
+    binFieldIds[10] = log->mainFieldIndexes.rcCommand[3];
+
 }
 
 void printStats(flightLog_t *log, int logIndex, bool raw, bool limits)
@@ -1087,7 +1123,7 @@ int decodeFlightLog(flightLog_t *log, const char *filename, int logIndex)
     if (options.toStdout) {
         csvFile = stdout;
     } else {
-        char *csvFilename = 0, *gpxFilename = 0;
+        char *csvFilename = 0, *gpxFilename = 0, *binFilename = 0;
         int filenameLen;
 
         const char *outputPrefix = 0;
@@ -1112,8 +1148,11 @@ int decodeFlightLog(flightLog_t *log, const char *filename, int logIndex)
 
         filenameLen = outputPrefixLen + strlen(".00.csv") + 1;
         csvFilename = malloc(filenameLen * sizeof(char));
+        binFilename = malloc(filenameLen * sizeof(char));
 
         snprintf(csvFilename, filenameLen, "%.*s.%02d.csv", outputPrefixLen, outputPrefix, logIndex + 1);
+        snprintf(binFilename, filenameLen, "%.*s.%02d.bin", outputPrefixLen, outputPrefix, logIndex + 1);
+
 
         filenameLen = outputPrefixLen + strlen(".00.gps.gpx") + 1;
         gpxFilename = malloc(filenameLen * sizeof(char));
@@ -1130,20 +1169,25 @@ int decodeFlightLog(flightLog_t *log, const char *filename, int logIndex)
 
         snprintf(eventFilename, filenameLen, "%.*s.%02d.event", outputPrefixLen, outputPrefix, logIndex + 1);
 
-        csvFile = fopen(csvFilename, "wb");
+        if (options.binOnly) {
+            binFile = fopen(binFilename, "wb");
+            free(binFilename);
+        } else {
+            csvFile = fopen(csvFilename, "wb");
 
-        if (!csvFile) {
-            fprintf(stderr, "Failed to create output file %s\n", csvFilename);
+            if (!csvFile) {
+                fprintf(stderr, "Failed to create output file %s\n", csvFilename);
 
+                free(csvFilename);
+                return -1;
+            }
+
+            fprintf(stderr, "Decoding log '%s' to '%s'...\n", filename, csvFilename);
             free(csvFilename);
-            return -1;
+
+            gpx = gpxWriterCreate(gpxFilename);
+            free(gpxFilename);
         }
-
-        fprintf(stderr, "Decoding log '%s' to '%s'...\n", filename, csvFilename);
-        free(csvFilename);
-
-        gpx = gpxWriterCreate(gpxFilename);
-        free(gpxFilename);
     }
 
     resetParseState();
@@ -1162,7 +1206,7 @@ int decodeFlightLog(flightLog_t *log, const char *filename, int logIndex)
     if (success)
         printStats(log, logIndex, options.raw, options.limits);
 
-    if (!options.toStdout)
+    if (!options.toStdout && !options.binOnly)
         fclose(csvFile);
 
     free(eventFilename);
@@ -1282,6 +1326,7 @@ void parseCommandlineOptions(int argc, char **argv)
             {"debug", no_argument, &options.debug, 1},
             {"limits", no_argument, &options.limits, 1},
             {"stdout", no_argument, &options.toStdout, 1},
+            {"bin-only", no_argument, &options.binOnly, 1},
             {"merge-gps", no_argument, &options.mergeGPS, 1},
             {"simulate-imu", no_argument, &options.simulateIMU, 1},
             {"include-imu-degrees", no_argument, &options.includeIMUDegrees, 1},

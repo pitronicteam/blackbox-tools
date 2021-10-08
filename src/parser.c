@@ -148,6 +148,18 @@ static void identifyMainFields(flightLog_t *log, flightLogFrameDef_t *frameDef)
             if (rcCommandIndex >= 0 && rcCommandIndex < 4) {
                 log->mainFieldIndexes.rcCommand[rcCommandIndex] = fieldIndex;
             }
+        } else if (startsWith(fieldName, "setpoint[")) {
+            int setpointIndex = atoi(fieldName + strlen("setpoint["));
+
+            if (setpointIndex >= 0 && setpointIndex < 4) {
+                log->mainFieldIndexes.setpoint[setpointIndex] = fieldIndex;
+            }
+        } else if (startsWith(fieldName, "debug[")) {
+            int debugIndex = atoi(fieldName + strlen("debug["));
+
+            if (debugIndex >= 0 && debugIndex < 4) {
+                log->mainFieldIndexes.debug[debugIndex] = fieldIndex;
+            }
         } else if (startsWith(fieldName, "axis")) {
             int axisIndex = atoi(fieldName + strlen("axisX["));
 

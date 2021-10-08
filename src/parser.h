@@ -89,6 +89,7 @@ typedef struct mainFieldIndexes_t {
     int pid[3][3]; //First dimension is [P, I, D], second dimension is axis
 
     int rcCommand[4];
+    int setpoint[4];
 
     int vbatLatest, amperageLatest;
     int magADC[3];
@@ -98,6 +99,8 @@ typedef struct mainFieldIndexes_t {
 
     int gyroADC[3];
     int accSmooth[3];
+
+    int debug[4];
 
     int motor[FLIGHT_LOG_MAX_MOTORS];
     int servo[FLIGHT_LOG_MAX_SERVOS];
